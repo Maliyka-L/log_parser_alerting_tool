@@ -1,4 +1,4 @@
-#fie is a basline - normal traffic (should not trigger any alerts)
+#this file is a baseline - normal traffic (should not trigger any alerts)
 
 2024-10-05 09:00:00 192.168.1.10 GET /home 200 Mozilla/5.0
 2024-10-05 09:01:12 192.168.1.11 GET /products 200 Mozilla/5.0

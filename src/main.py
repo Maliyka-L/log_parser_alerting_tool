@@ -3,13 +3,28 @@ import datetime #timestamps
 import os #file paths
 import requests #sending discord webhook alerts
 import json #reading config
+import csv #exporting alerts
 import argparse #command-line arguments
 
-with open("src/config.json", "r") as cfg:
+#builds paths from this file's location so the tool works no matter which folder it is run from
+SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(SRC_DIR)
+
+#loads secrets such as the Discord webhook from a .env file in the project folder (never uploaded to GitHub)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
+except ImportError:
+    pass
+
+with open(os.path.join(SRC_DIR, "config.json"), "r") as cfg:
     CONFIG = json.load(cfg)
 
+#the webhook URL acts like a password, so it is read from the DISCORD_WEBHOOK_URL environment variable
+#instead of being stored in config.json
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
 #rules as config files and stores them as variables for easy access. Adds easy flexibility
-WEBHOOK_URL = CONFIG["webhook_url"]
 LOG_FILE_PATH = CONFIG["log_file_path"]
 FAILED_STATUS_CODES = set(CONFIG["failed_status_codes"])
 MAX_FAILED_ATTEMPTS = CONFIG["max_failed_attempts"]
@@ -23,6 +38,9 @@ ENDPOINT_SCAN_WINDOW = CONFIG["endpoint_scan_window"]
 SEVERITY_OVERRIDES = CONFIG["severity"]
 SEVERITY_COLOURS_CFG = CONFIG["severity_colours"]
 RULES_ENABLED = CONFIG["rules"]
+
+#Discord rejects messages that are too long, so only this many alerts are included per message
+MAX_DISCORD_ALERTS = 10
 
 #Adds visual indicators for severity levels in the console output
 SEVERITY_ICONS = {
@@ -59,10 +77,16 @@ def parse_log_line(line):
         "user_agent": user_agent
     }
 
+#finds a log file whether the path is relative to the current folder or to the project folder
+def resolve_path(path):
+    if os.path.isabs(path) or os.path.exists(path):
+        return path
+    return os.path.join(BASE_DIR, path)
+
 #reads the log file line by line, uses parse_log_line to parse each line, and collects valid events into a list. Returns the list of events.
 def load_logs(path):
     events = []
-    with open(path, "r") as f:
+    with open(resolve_path(path), "r", encoding="utf-8") as f:
         for line in f:
             parsed = parse_log_line(line)
             if parsed:
@@ -289,8 +313,9 @@ def dedupe_alerts(alerts):
 
 #exports alerts to a JSON file for offline analysis, SIEM ingestion, or audit logging.
 def export_json(alerts):
-    os.makedirs("alerts", exist_ok=True)
-    filename = f"alerts/{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H-%M-%S')}.json"
+    alerts_dir = os.path.join(BASE_DIR, "alerts")
+    os.makedirs(alerts_dir, exist_ok=True)
+    filename = os.path.join(alerts_dir, f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H-%M-%S')}.json")
 
     serializable = []
     for alert in alerts:
@@ -303,34 +328,36 @@ def export_json(alerts):
             "geoip": alert.get("geoip", {})
         })
 
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(serializable, f, indent=4)
 
     print(f"Saved alerts to {filename}")
 
 #exports alerts to a CSV file for analysts, spreadsheets, or SIEM ingestion tools that prefer tabular formats.
 def export_csv(alerts):
-    os.makedirs("alerts", exist_ok=True)
-    filename = f"alerts/{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H-%M-%S')}.csv"
+    alerts_dir = os.path.join(BASE_DIR, "alerts")
+    os.makedirs(alerts_dir, exist_ok=True)
+    filename = os.path.join(alerts_dir, f"{datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H-%M-%S')}.csv")
 
-    with open(filename, "w") as f:
-        f.write("ip,time,reason,type,severity,country,region,city,isp,org,asn\n")
+    #csv.writer handles commas inside values (e.g. ISP names) so columns never get mixed up
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ip", "time", "reason", "type", "severity", "country", "region", "city", "isp", "org", "asn"])
         for alert in alerts:
-            ip = alert["ip"]
-            time = alert["time"].strftime("%Y-%m-%d %H:%M:%S")
-            reason = alert["reason"].replace(",", ";")
-            type_ = alert["type"]
-            severity = alert["severity"]
-
             geo = alert.get("geoip", {})
-            country = geo.get("country", "Unknown")
-            region = geo.get("region", "Unknown")
-            city = geo.get("city", "Unknown")
-            isp = geo.get("isp", "Unknown")
-            org = geo.get("org", "Unknown")
-            asn = geo.get("asn", "Unknown")
-
-            f.write(f"{ip},{time},{reason},{type_},{severity},{country},{region},{city},{isp},{org},{asn}\n")
+            writer.writerow([
+                alert["ip"],
+                alert["time"].strftime("%Y-%m-%d %H:%M:%S"),
+                alert["reason"],
+                alert["type"],
+                alert["severity"],
+                geo.get("country", "Unknown"),
+                geo.get("region", "Unknown"),
+                geo.get("city", "Unknown"),
+                geo.get("isp", "Unknown"),
+                geo.get("org", "Unknown"),
+                geo.get("asn", "Unknown")
+            ])
 
     print(f"Saved alerts to {filename}")
 
@@ -340,7 +367,10 @@ def enrich_geoip(alerts):
         ip = alert["ip"]
 
         try:
-            response = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,org,as")
+            response = requests.get(
+                f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,org,as",
+                timeout=10
+            )
             data = response.json()
 
             if data.get("status") == "success":
@@ -377,19 +407,13 @@ def enrich_geoip(alerts):
 #builds a discord embed and sends it using the webhook URL. It includes the highest severity alert in the embed color and lists all alerts with their details.
 def send_alert(alerts):
     if not WEBHOOK_URL:
-        print("Webhook URL not set. Skipping alert.")
+        print("Discord webhook not set (add DISCORD_WEBHOOK_URL to your .env file). Skipping alert.")
         return
 
     severity_icons = {
         "high": "🔴",
         "medium": "🟠",
         "low": "🟢"
-    }
-
-    SEVERITY_COLOURS = {
-        "high": 0xFF0000,
-        "medium": 0xFFA500,
-        "low": 0x00FF00
     }
 
     highest = max(alerts, key=lambda a: {"high": 3, "medium": 2, "low": 1}[a["severity"]])
@@ -403,46 +427,41 @@ def send_alert(alerts):
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat()
     }
 
-    for alert in alerts:
+    #adds one field per alert so every alert appears in the Discord message
+    #(Discord limits the size of a message, so a maximum of 10 alerts are shown)
+    for alert in alerts[:MAX_DISCORD_ALERTS]:
         icon = severity_icons.get(alert.get("severity"), "⚪")
 
-    geo = alert.get("geoip", {}) or {}
+        geo = alert.get("geoip", {}) or {}
 
-    country = geo.get("country", "Unknown")
-    region = geo.get("region", "Unknown")
-    city = geo.get("city", "Unknown")
-    isp = geo.get("isp", "Unknown")
-    asn = geo.get("asn", "Unknown")
+        country = geo.get("country", "Unknown")
+        region = geo.get("region", "Unknown")
+        city = geo.get("city", "Unknown")
+        isp = geo.get("isp", "Unknown")
+        asn = geo.get("asn", "Unknown")
 
-    for alert in alerts:
-        icon = severity_icons.get(alert.get("severity"), "⚪")
+        embed["fields"].append({
+            "name": f"{icon} {alert['type'].replace('_', ' ').title()}",
+            "value":
+                f"**IP:** `{alert['ip']}`\n"
+                f"**Country:** {country}\n"
+                f"**Region:** {region}\n"
+                f"**City:** {city}\n"
+                f"**ISP:** {isp}\n"
+                f"**ASN:** {asn}\n"
+                f"**Reason:** {alert['reason']}\n"
+                f"**Time:** `{alert['time'].strftime('%Y-%m-%d %H:%M:%S')}`",
+            "inline": False
+        })
 
-    geo = alert.get("geoip", {})
-
-    country = geo.get("country", "Unknown")
-    region = geo.get("region", "Unknown")
-    city = geo.get("city", "Unknown")
-    isp = geo.get("isp", "Unknown")
-    asn = geo.get("asn", "Unknown")
-
-    embed["fields"].append({
-        "name": f"{icon} {alert['type'].replace('_', ' ').title()}",
-        "value":
-            f"**IP:** `{alert['ip']}`\n"
-            f"**Country:** {country}\n"
-            f"**Region:** {region}\n"
-            f"**City:** {city}\n"
-            f"**ISP:** {isp}\n"
-            f"**ASN:** {asn}\n"
-            f"**Reason:** {alert['reason']}\n"
-            f"**Time:** `{alert['time'].strftime('%Y-%m-%d %H:%M:%S')}`",
-        "inline": False
-    })
+    if len(alerts) > MAX_DISCORD_ALERTS:
+        embed["footer"] = {"text": f"Showing {MAX_DISCORD_ALERTS} of {len(alerts)} alerts. See the JSON/CSV export for the full list."}
 
     payload = {"embeds": [embed]}
 
     try:
-        requests.post(WEBHOOK_URL, json=payload)
+        response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        response.raise_for_status()
         print("Embed alert sent to Discord.")
     except Exception as e:
         print(f"Failed to send embed alert: {e}")
@@ -468,7 +487,7 @@ def main():
         LOG_FILE_PATH = args.log
 
     if args.rules:
-        enabled = args.rules.split(",")
+        enabled = [rule.strip() for rule in args.rules.split(",")]
         for rule in RULES_ENABLED:
             RULES_ENABLED[rule] = rule in enabled
 

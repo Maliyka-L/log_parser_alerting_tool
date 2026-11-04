@@ -126,8 +126,22 @@ cd log_parser_alerting_tool
 Install dependencies:
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 ```
+
+### Discord Alerts (optional)
+
+Discord alerts are sent through a webhook. A webhook URL works like a password, so it is kept in a `.env` file that is never uploaded to GitHub.
+
+1. In Discord, go to **Server Settings → Integrations → Webhooks → New Webhook** and copy the webhook URL
+2. Copy `.env.example` and rename the copy to `.env`
+3. Paste your webhook URL after the `=`:
+
+```text
+DISCORD_WEBHOOK_URL=your_webhook_url_here
+```
+
+If no webhook is set, the tool still runs and simply skips the Discord step.
 
 ## Usage
 
@@ -140,7 +154,7 @@ python src/main.py
 Run a specific log file:
 
 ```bash
-python src/main.py --log logs/bruteforce.log
+python src/main.py --log logs/brute_force_activity.log
 ```
 
 Disable Discord notifications:
@@ -167,31 +181,37 @@ Enable only selected rules:
 python src/main.py --rules bruteforce,endpoint_scan
 ```
 
+Available rule names: `bruteforce`, `admin_access`, `after_hours`, `high_volume`, `endpoint_scan`, `suspicious_user_agent`
+
+JSON and CSV exports are saved in the `alerts/` folder. Detection thresholds, the allow list and severities can be changed in `src/config.json`.
+
 ## Sample Datasets
+
+All sample logs are in the `logs/` folder.
+
+### sample.log
+
+Demonstrates all major detection rules in one file.
 
 ### normal_activity.log
 
 Contains legitimate traffic and should not generate alerts.
 
-### bruteforce.log
+### brute_force_activity.log
 
 Contains repeated failed login attempts from a single IP address.
 
-### high_volume.log
+### high_volume_activity.log
 
 Contains a high number of requests from a single IP address.
 
-### after_hours.log
+### after_hours_activity.log
 
-Contains activity outside normal operating hours.
+Contains activity between 00:00 and 06:00.
 
-### endpoint_scan.log
+### endpoint_scanning.log
 
-Contains endpoint enumeration activity.
-
-### mixed_attacks.log
-
-Demonstrates all major detection rules simultaneously.
+Contains endpoint enumeration activity using a scanning tool user-agent.
 
 ## Example Output
 
@@ -213,20 +233,20 @@ Activity outside normal hours
 Run all tests:
 
 ```bash
-pytest
+python -m pytest
 ```
 
 Run tests with coverage:
 
 ```bash
-pytest --cov=src --cov-report=term-missing
+python -m pytest --cov=src --cov-report=term-missing
 ```
 
-### Current Test Coverage
+## Security Notes
 
-```text
-73%
-```
+- The Discord webhook URL is loaded from a `.env` file and is never stored in the code or config.
+- GeoIP lookups use the free [ip-api.com](https://ip-api.com/) service, which sends alert IP addresses to a third party, is limited to 45 requests per minute and is for non-commercial use only.
+- Private IP addresses (such as `192.168.x.x`) return "Unknown" for GeoIP, as they have no public location.
 
 ## Future Improvements
 

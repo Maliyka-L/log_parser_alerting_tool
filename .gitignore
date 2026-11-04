@@ -1,8 +1,26 @@
+# Secrets - never upload
+.env
 encryption.key
+
+# Python
 __pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# Test coverage results
+.coverage
+htmlcov/
+
+# Generated output
 output/
 reports/
 alerts/
+
+# Log files (except the sample logs used for testing)
 *.log
 !logs/
 !logs/*.log
+
+.vscode/

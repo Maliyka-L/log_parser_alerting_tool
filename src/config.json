@@ -1,5 +1,4 @@
 {
-  "webhook_url": "https://discord.com/api/webhooks/1556771799901933689/thUPtfEgVmfQG4ihHtHYrYNuuSBJ4K0BsU7PPFe5Xo7MIC42NceL2fRXvzETzVnfDu7k",
   "log_file_path": "logs/sample.log",
 
   "failed_status_codes": ["401", "403"],
