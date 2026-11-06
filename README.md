@@ -228,6 +228,16 @@ Accessed /admin page
 Activity outside normal hours
 ```
 
+## Screenshots
+
+### Alerts in the terminal
+![Alerts detected in the terminal](screenshots/terminal_alerts.png)
+
+### JSON export
+![Alerts exported to JSON with GeoIP fields](screenshots/json_export.png)
+
+The sample logs use private IP addresses, so GeoIP fields show "Unknown". Public IP addresses are enriched with their country, region, city, ISP and ASN.
+
 ## Testing
 
 Run all tests:
